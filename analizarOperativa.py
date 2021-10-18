@@ -13,7 +13,7 @@ import datetime
 import pandas as pd
 from pandas import DataFrame
 import v20
-import log
+
 import json
 import sqlalchemy
 FECHAINICIO=datetime.datetime(2021,10,10)

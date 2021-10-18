@@ -272,4 +272,3 @@ elif(U[1,1]==True):
 
 
 
-operar("buy")
