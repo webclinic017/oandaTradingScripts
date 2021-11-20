@@ -21,7 +21,9 @@ PORT= 33063
 DATABASE="bolsa"
 TABLE="calendarioProduccion"
 APALANCAMIENTO=30
-
+parametroStopLoss=0.25
+parametroLevel=30
+CAPITAL_INICIAL=3000
 port=443
 symbol="EUR_USD"
 symbol1="EUR"
@@ -30,7 +32,8 @@ import argparse
 parser = argparse.ArgumentParser(description='Choose account.')
 parser.add_argument('cuenta',
                     help='choose account: real or demo')
-args = parser.parse_args()                 
+args = parser.parse_args()  
+CUENTA=    args.cuenta           
 if args.cuenta=="demo":
         file=open('credentialsDemo2.json',"r")
 elif args.cuenta=="real":
@@ -104,6 +107,25 @@ class  Bd():
             df.columns = self.mycursor.column_names
             print("symbol: %s, number of events: %s"%(simbolo,len(df)))
             return df
+    def getDineroOperacionActual(self):
+        if CUENTA=="demo":
+            sql="select * from dineroActualDemo where fecha>= all (select  fecha from dineroActualDemo)"
+        else:
+            sql="select * from dineroActualReal where fecha>= all (select  fecha from dineroActualReal)"
+        self.mycursor.execute(sql)
+        #self.mydb.commit()
+        records=self.mycursor.fetchone()
+        return records
+    def insertarDineroNuevaPosicion(self,dinero):
+        if CUENTA=="demo":
+            sql="insert into dineroActualDemo values(%s,%s);"
+        else:
+            sql="insert into dineroActualReal values(%s,%s);"
+        self.mycursor.execute(sql,(dt.datetime.today(),dinero))
+        self.mydb.commit()
+
+
+
 
 bd=Bd()
 diccionario={}
@@ -116,19 +138,25 @@ arrays={}
 for currency in currencies:
     for event in diccionario[currency]:
         
-        #calendario=bd.getCalendar(event,"2010-1-1","2016-7-28",currency)
+        #calendario=bd.getCalendar(event,"2010-1-1","2018-8-18",currency)
        
 
         calendario=bd.getCalendar(event,"2011-01-01",dt.datetime.today().date()-timedelta(days=1),currency)
         calendario.set_index("id",drop=True,inplace=True)
-        calendario.tail()
+        
         array=calendario.loc[:,["fecha","actual"]]
         array["date"]=array["fecha"]
         array.drop(labels=["fecha"],axis=1,inplace=True)
         array=array.loc[ array["actual"].notna()]
+
         array["actual"]=array["actual"].apply(lambda x: transformarValor(x))
-       
+        #print(array.tail())
+        array["actual"]=array["actual"].transform((
+        #lambda x: x.rolling(window=8).mean()
+            lambda x:x.ewm(span=2).mean()
+        ))
         arrays[currency+"_"+event]=array
+        #print(array[-60:-50])
         """print(currency+"_"+event)
         print(float(np.mean(array["actual"][-SHORTLOOKBACK:])-np.mean(array["actual"][-LONGLOOKBACK:])))"""
 def comprobarResponse(response,side):
@@ -181,7 +209,7 @@ def operar(side):
     response=api.account.get(account_number)
     z=response.get("account", 200)
     #print(z)
-    balance=z.balance-z.unrealizedPL
+    balance=z.balance
     marginUsed=z.marginUsed
     financing=z.financing
     print("Balance: %s"%balance)
@@ -206,11 +234,15 @@ def operar(side):
     kwargs["instrument"]=symbol
                 
     kwargs["type"]="MARKET"
-    
-    kwargs["units"]=(APALANCAMIENTO*balance)/90
+    #if balance>CAPITAL_INICIAL:
+    kwargs["units"]=(APALANCAMIENTO*balance)/parametroLevel
+    #else:
+    #    kwargs["units"]=(APALANCAMIENTO*CAPITAL_INICIAL)/parametroLevel
+
     if side=="sell":
         kwargs["units"]= kwargs["units"]*-1
     print("Cantidad a comprar %s"%kwargs["units"])
+    bd.insertarDineroNuevaPosicion(balance)
     kwargs["units"]=int( kwargs["units"])
     response=api.order.market(account_number,**kwargs)
    
@@ -270,5 +302,46 @@ elif(U[1,1]==True):
     operar("sell")
 
 
+def cerrarPosicion():
+    response=api.account.get(account_number)
+    z=response.get("account", 200)
+    #print(z)
+    balance=z.balance
+    marginUsed=z.marginUsed
+    financing=z.financing
+   
+   
+  
+    
+    
+    estado=comprobarEstadoActual(z,symbol)
+    print("Estado al intentar cerrar posicion %s"%estado)
+    kwargs={}
+      
+    if (estado=="vendido") :
+        kwargs["shortUnits"]="ALL"
+        response=api.position.close(account_number,symbol,**kwargs)
+        comprobarResponse(response,'short')
+    elif (estado=="comprado"):
+        kwargs["longUnits"]="ALL"
+        response=api.position.close(account_number,symbol,**kwargs)
+        comprobarResponse(response,'long')
+    
+ 
+def comprobarCierrePorStop():
 
+    response=api.account.get(account_number)
+    z=response.get("account", 200)
+    
+    balance=z.balance+z.unrealizedPL
+    print("Balance %s"%balance)
 
+    dineroOperacionActual=bd.getDineroOperacionActual()[1]
+    print("Porcentaje ganancias/perdidas %s"%(-(dineroOperacionActual-balance)/dineroOperacionActual))
+    if (dineroOperacionActual-balance)/dineroOperacionActual>parametroStopLoss:
+        print("Hay que cerrar")
+        #return True
+    return False
+cerrar=comprobarCierrePorStop()
+if    cerrar:
+    cerrarPosicion()
